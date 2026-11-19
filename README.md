@@ -2,7 +2,7 @@
 
 原生 WebGPU 赛车游戏。在支持 WebGPU 的浏览器中，驾驶奥迪 R8 挑战纽伯格林北环。
 
-**[在线试玩](https://will-xgq.github.io/apex-circuit/)** · [观看 30 秒实机宣传片](https://will-xgq.github.io/apex-circuit/exports/Apex-Circuit-北环实机宣传片-30s.mp4)
+**[在线试玩](https://will-xgq.github.io/apex-circuit/)** · [观看 30 秒实机宣传片](https://will-xgq.github.io/apex-circuit/exports/Apex-Circuit-北环实机宣传片-30s.mp4?v=surfacing-1)
 
 第一次玩可以选「自由计时」，按住 **W** 或触屏油门起步，按 **C** 或点「视角」切换座舱和追车镜头。
 
