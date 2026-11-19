@@ -1,0 +1,20 @@
+{
+  "source": "local Blender exterior study from Image 2.6 views and Audi dimensions",
+  "source_triangles": 131890,
+  "runtime_triangles": 31992,
+  "bytes": 1422936,
+  "parts": {
+    "Body shell": 9287,
+    "Front fascia": 2389,
+    "Rear fascia": 1778,
+    "Rear spoiler": 1434,
+    "Wheel FR": 2812,
+    "Hub FR": 1464,
+    "Wheel RR": 2812,
+    "Hub RR": 1464,
+    "Wheel FL": 2812,
+    "Hub FL": 1464,
+    "Wheel RL": 2812,
+    "Hub RL": 1464
+  }
+}
