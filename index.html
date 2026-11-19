@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#111412">
+<title>Apex Circuit · 纽伯格林北环</title>
+<link rel="stylesheet" href="./src/ui.css?v=t13-grid-3">
+</head>
+<body>
+<main class="sim">
+  <canvas id="world" aria-label="赛车赛道"></canvas>
+  <div class="vignette"></div>
+  <header class="mast">
+    <a class="brand" href="./" aria-label="Apex Circuit 首页"><i></i><i></i><i></i> APEX CIRCUIT</a>
+    <span class="circuit">NORDSCHLEIFE <small>· 纽伯格林北环</small></span>
+    <div class="mast-right">
+      <span id="gpu-status"><b></b> WEBGPU</span>
+      <button id="assist-toggle" type="button" aria-pressed="true" title="B / 新手辅助">新手辅助</button>
+      <button id="coach-toggle" type="button" title="H / 教练模式">教练提示</button>
+      <button id="view-button" type="button" title="C / 切换视角">视角</button>
+      <button id="audio" type="button" aria-label="关闭驾驶音效" aria-pressed="true" title="发动机、胎噪与风噪">音效</button>
+      <button id="pause" type="button" aria-label="暂停" title="Esc / 暂停" disabled>Ⅱ</button>
+    </div>
+  </header>
+
+  <section id="timing" class="timing glass" aria-label="单圈计时">
+    <div class="timing-head"><span id="lap-label">单圈</span><strong id="lap">01 <em>/ 03</em></strong></div>
+    <strong id="lap-time">0:00.000</strong>
+    <div class="timing-best"><span>最快圈</span><strong id="best">—</strong></div>
+  </section>
+  <section class="positions glass" aria-label="比赛名次">
+    <div class="positions-head"><span>实时名次</span><strong id="position">04 <em>/ 06</em></strong></div>
+    <ol id="positions"></ol>
+  </section>
+  <section class="map glass" aria-label="赛道地图">
+    <div>北环 <span id="distance"></span></div>
+    <canvas id="map" width="264" height="164"></canvas>
+  </section>
+  <section class="dash" aria-label="速度仪表">
+    <canvas id="dial" width="420" height="420"></canvas>
+    <div class="dash-readout"><span id="speed">0</span><small>KM/H</small><b id="gear">N</b></div>
+
+  </section>
+
+  <section id="coach" class="coach glass" aria-label="北环驾驶教练" hidden>
+    <div class="coach-top"><span>赛道教练</span><b id="coach-distance"></b></div>
+    <strong id="coach-corner"></strong><p id="coach-cue"></p>
+    <div class="pace"><span>当前 <b id="pace-actual">0</b></span><span>建议 <b id="pace-target">0</b> km/h</span></div>
+    <div class="coach-speeds"><span>参考入弯 <b id="coach-in"></b></span><span>参考出弯 <b id="coach-out"></b></span></div>
+    <div id="coach-result" hidden></div>
+  </section>
+  <button id="pedal-toggle" type="button" aria-pressed="true" title="V / 踏板视图" hidden>踏板视图</button>
+  <div id="countdown" class="countdown" aria-live="polite" hidden></div>
+  <div class="overlay" id="overlay">
+    <section class="menu" aria-labelledby="menu-title">
+      <p id="menu-kicker" class="kicker">NORDSCHLEIFE · 纽伯格林北环</p>
+      <h1 id="menu-title">NORD<br>SCHLEIFE</h1>
+      <p id="menu-copy">从 T13 发车，与五辆同款奥迪 R8 同场竞速，或从 P 房驶入北环自由计时。</p>
+      <div id="error" role="alert" hidden></div>
+      <p id="lesson-help">新手辅助已开启。按住 W 或油门跟线，轻点方向微调。绿线加速，黄线收油，红线刹车。</p>
+      <div class="actions">
+        <button type="button" id="primary" disabled>正在加载赛道</button>
+        <button type="button" id="secondary" disabled>自由计时</button>
+        <button type="button" id="pit-start" disabled>T13 P 房出站</button>
+        <button type="button" id="inspect" disabled>R8 拆解</button>
+      </div>
+      <a class="credits-link" href="./credits.html" target="_blank" rel="noopener">地图 © OpenStreetMap · 航拍、地形与录音署名</a>
+      <div id="menu-controls" class="bindings"><span><kbd>W A S D</kbd> 驾驶</span><span><kbd>Q / E</kbd> 换挡</span><span><kbd>H</kbd> 教练</span><span><kbd>C</kbd> 视角</span><span><kbd>R</kbd> 回赛道</span></div>
+    </section>
+  </div>
+
+  <section id="studio" aria-labelledby="studio-title" hidden>
+    <div class="studio-heading">
+      <span>V10 PERFORMANCE QUATTRO</span>
+      <h2 id="studio-title">Audi R8 Coupé</h2>
+    </div>
+    <button type="button" id="studio-back">返回</button>
+    <div class="studio-controls">
+      <label for="explosion">拆解度 <output id="explosion-value" for="explosion">75%</output></label>
+      <input id="explosion" type="range" min="0" max="100" value="75" aria-label="拆解度">
+      <small>拖动画面旋转 · 滚轮缩放</small>
+    </div>
+  </section>
+  <nav class="touch" aria-label="触屏驾驶">
+    <div><button data-key="ArrowLeft" aria-label="左转">◀</button><button data-key="ArrowRight" aria-label="右转">▶</button></div>
+    <div class="pedals"><button data-key="Space">手刹</button><button id="touch-gear" type="button">升挡</button><button data-key="ArrowDown">刹车</button><button data-key="ArrowUp">油门</button></div>
+  </nav>
+  <footer class="footer">
+    <span><b></b><span id="surface">干燥柏油 · 自动挡</span></span>
+    <span class="desktop-controls"><kbd>WASD</kbd> 驾驶 <kbd>SPACE</kbd> 手刹 <kbd>Q/E</kbd> 换挡 <kbd>M</kbd> 自动 <kbd>C</kbd> 视角 <kbd>R</kbd> 回赛道</span>
+    <span id="view-label">头盔座舱</span>
+  </footer>
+</main>
+<script>
+  // Version the complete ES module graph when a track release changes shared exports.
+  const modules=['main','gpu','mesh','scenery','race','vehicle','track','coach','model','forest','cockpit','textures','audio','driving-effects'].map(name=>'./src/'+name+'.js');
+  const survey=['route','line','relief','roadside','woodland'].map(name=>'./assets/nordschleife/'+name+'.js');
+  const map=document.createElement('script');map.type='importmap';
+  map.textContent=JSON.stringify({imports:Object.fromEntries([...modules,...survey].map(path=>[path,path+'?v=speed-audio-1']))});
+  document.currentScript.after(map);
+</script>
+<script type="module" src="./src/main.js?v=speed-audio-1"></script>
+</body>
+</html>
