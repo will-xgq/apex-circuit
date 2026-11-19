@@ -1,5 +1,7 @@
 """Build the local R8 exterior study in Blender. Uses metres, Y up and +Z nose in glTF."""
 import math
+import sys
+from bisect import bisect_right
 from pathlib import Path
 
 import bpy
@@ -11,6 +13,7 @@ ASSETS = ROOT / 'assets/r8'
 TAU = math.tau
 NOSE, TAIL = 2.2145, -2.2145
 FRONT_AXLE, REAR_AXLE = NOSE - .993, TAIL + .786
+LIP_JOIN = 29/30
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
 
@@ -42,15 +45,12 @@ def material(name, color, metal=0, rough=.45, image=None):
     return mat
 
 
-def ref_image(name):
-    image = bpy.data.images.load(str(DESIGN / name))
-    image.pack()
-    return image
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from r8_trim import PAINT, make_trim
 
-
-side_ref, plan_ref = ref_image('rodin-views.png'), ref_image('orthographic.png')
-side_paint = material('Silver • side and rear', (.50,.51,.52), .32, .37, side_ref)
-plan_paint = material('Silver • nose and upper surfaces', (.50,.51,.52), .32, .37, plan_ref)
+plan_ref, side_ref = make_trim(DESIGN)
+side_paint = material('Silver • side and rear', PAINT, .57, .29, side_ref)
+plan_paint = material('Silver • nose and upper surfaces', PAINT, .57, .29, plan_ref)
 alloy = material('Machined alloy', (.44,.46,.48), .82, .25)
 graphite = material('Graphite wheel spokes', (.12,.13,.145), .74, .32)
 carbon = material('Satin carbon', (.036,.039,.043), .35, .37)
@@ -59,7 +59,7 @@ rubber_edge = material('Tire shoulder', (.031,.032,.033), 0, .80)
 liner = material('Wheel arch and undertray', (.013,.015,.017), .02, .82)
 rotor = material('Brake rotor', (.29,.29,.28), .77, .42)
 caliper_mat = material('Brake calipers', (.34,.038,.025), .32, .4)
-silver = material('Suzuka silver', (.60,.61,.63), .64, .26)
+silver = material('Suzuka silver', PAINT, .57, .29)
 mirror = material('Mirror glass', (.38,.46,.51), .9, .12)
 glazing = material('Laminated windshield', (.026,.038,.046), .48, .19)
 
@@ -73,11 +73,6 @@ def side_uv(p):
 def top_uv(p):
     x, _, z = p
     return (476-z*142.1)/960, 1-(467+x*148.2)/640
-
-
-def silver_uv(p):
-    # A neutral paint swatch from the upper flank, beyond the projected lens area.
-    return (377+(p[0]*7))/1536, 1-(512+235+p[1]*4)/1024
 
 
 def rear_uv(p):
@@ -98,6 +93,7 @@ def blender(p):
 class Part:
     def __init__(self, name, pivot=(0,0,0), explosion=(0,0,0), wheel=False, front=False):
         self.name, self.pivot = name, pivot
+        self.skin, self.building_skin = [], False
         self.meta = dict(explosion=list(explosion), wheel=wheel, front=front)
         self.positions, self.indices, self.faces, self.uvs, self.slots, self.materials = [], {}, [], [], [], []
 
@@ -115,6 +111,7 @@ class Part:
         if len(set(indices)) < 3:
             return
         self.faces.append(indices)
+        self.skin.append(self.building_skin)
         self.uvs.extend([uv(p) for p in pts] if uv else [(0,0)]*len(pts))
         if mat not in self.slots:
             self.slots.append(mat)
@@ -129,6 +126,9 @@ class Part:
         for polygon,slot in zip(mesh.polygons,self.materials):
             polygon.material_index=slot
             polygon.use_smooth = self.slots[slot] != liner
+        if any(self.skin):
+            skin=mesh.attributes.new('exterior_skin', 'BOOLEAN', 'FACE')
+            skin.data.foreach_set('value', self.skin)
         uv=mesh.uv_layers.new(name='UVMap')
         uv.data.foreach_set('uv', [x for pair in self.uvs for x in pair])
         obj=bpy.data.objects.new(self.name,mesh)
@@ -146,13 +146,29 @@ stations = [
     (-.46,.918,1.191,.80),(-.11,.91,1.236,.81),(.18,.914,1.232,.819),
     (.40,.916,1.194,.824),(.64,.925,1.085,.824),(.88,.946,.962,.823),
     (1.09,.961,.866,.830),(1.24,.970,.838,.825),(1.47,.962,.809,.807),
-    (1.72,.95,.758,.764),(1.94,.928,.678,.723),(2.11,.915,.663,.714),(NOSE,.895,.636,.705),
+    (1.72,.951,.762,.783),(1.94,.936,.721,.750),(2.11,.919,.680,.718),(NOSE,.899,.649,.693),
 ]
 profiles = [[(row[0],row[col]) for row in stations] for col in (1,2,3)]
 
 
+# Shape-preserving cubic profiles give the hood and wings a continuous highlight.
+depths = [row[0] for row in stations]
+slopes = []
+for profile in profiles:
+    secants = [(b[1]-a[1])/(b[0]-a[0]) for a,b in zip(profile,profile[1:])]
+    slopes.append([secants[0]] + [2*a*b/(a+b) if a*b>0 else 0 for a,b in zip(secants,secants[1:])] + [secants[-1]])
+
+
 def section(z):
-    return tuple(interpolate(profile,z) for profile in profiles)
+    i = max(0, min(len(stations)-2, bisect_right(depths,z)-1))
+    h=depths[i+1]-depths[i]
+    t=max(0,min(1,(z-depths[i])/h))
+    return tuple((1-t)**2*((1+2*t)*p[i][1] + h*t*m[i]) +
+                 t*t*((3-2*t)*p[i+1][1] - h*(1-t)*m[i+1]) for p,m in zip(profiles,slopes))
+
+
+def lip_radius(z):
+    return .062*smoothstep(1.80,NOSE,z) - .038*smoothstep(1.84,-TAIL,-z)
 
 
 def surface(z,u):
@@ -160,11 +176,17 @@ def surface(z,u):
     lateral=abs(u)
     roll=smoothstep(.62,1.0,lateral)
     cabin=max(0,ridge-shoulder)
-    y=ridge*(1-roll)+shoulder*roll
-    y-=.018*lateral*lateral*(1-roll)
+    y=ridge*(1-roll)+shoulder*roll-.018*lateral*lateral*(1-roll)
     y+=.018*math.exp(-((lateral-.81)/.15)**2)*(1-min(1,cabin/.29))
-    rounding=.355*smoothstep(1.15,NOSE,z)-.208*smoothstep(1.40,-TAIL,-z)
-    return w*u,y,z-rounding*lateral**2.5
+    hood=smoothstep(.98,1.31,z)*(1-smoothstep(2.00,NOSE,z))
+    crease=.77-.14*smoothstep(1.14,2.06,z)
+    y+=hood*(.031*math.exp(-((lateral-crease)/.085)**2)-.011*math.exp(-((lateral-crease+.12)/.12)**2))
+    # Roll the top into the vertical flank, with a tangent along the side at the outer edge.
+    edge=max(0,(lateral-.90)/.10)*math.pi/2
+    width=lateral if lateral<=.90 else .90+.10*math.sin(edge)
+    y-=.047*(1-math.cos(edge))
+    rounding=.405*smoothstep(1.22,NOSE,z)-.203*smoothstep(1.40,-TAIL,-z)
+    return math.copysign(w*width,u), y, z-rounding*lateral**2.8-lip_radius(z)
 
 
 def arch(z):
@@ -178,58 +200,119 @@ def arch(z):
     return y
 
 
-def shell(part,za,zb):
-    nz=max(20,round((zb-za)*65))
-    nu,ny=56,14
-    for i in range(nz):
-        a=za+(zb-za)*i/nz; b=za+(zb-za)*(i+1)/nz
-        for j in range(nu):
-            u=j*2/nu-1; v=(j+1)*2/nu-1
-            pts=[surface(a,u),surface(b,u),surface(b,v),surface(a,v)]
-            # The side view preserves the glazing, wheel-arch creases and carbon sideblade.
-            use_side=abs((u+v)/2)>.79 and -1.18<(a+b)/2<1.08
-            mid=(a+b)/2
+def wall_bottom(z, end):
+    return max(arch(end),.115+.048*smoothstep(1.64,NOSE,z),.115+.082*smoothstep(1.76,-TAIL,-z))
+
+
+def bumper_roll(z,t):
+    # A quarter-round from the hood lip into the fascia, shared with each outer corner.
+    angle=min(1,(1-t)/.20)*math.pi/2
+    height=t if t<=.8 else 1-.20*(1-math.cos(angle))
+    return height, lip_radius(z)*math.sin(angle)
+
+
+def side_inset(t):
+    return .048*(1-t)**2+.023*math.sin(math.pi*t)**2
+
+
+def sidewall(z,sign,t):
+    x,upper,end=surface(z,sign)
+    height,dz=bumper_roll(z,t)
+    lower=wall_bottom(z,end+dz)
+    door=smoothstep(-1.30,-.87,z)*(1-smoothstep(.79,1.19,z))
+    belt=.60+.12*smoothstep(-.73,.90,z)
+    inset=side_inset(t)+door*(.041*math.exp(-((t-.30)/.21)**2)-.014*math.exp(-((t-belt)/.092)**2))
+    return x-sign*inset,lower+(upper-lower)*height,end+dz
+
+
+def roof_station(z,u):
+    # Fit the windshield, A-pillars and quarter lights to actual edges in the body mesh.
+    a=abs(u)
+    side=smoothstep(.745,.972,a)
+    shoulder=1-smoothstep(.972,1,a)
+    endglass=(-.52-.60*side) * shoulder - .82*(1-shoulder)
+    roof=(.405-.075*min(1,(a/.69)**2)+.60*side)*shoulder+.405*(1-shoulder)
+    cowl=1.18-.17*min(1,(a/.69)**2)*shoulder
+    return interpolate([(TAIL,TAIL),(-1.36,-1.36),(-.82,endglass),(.405,roof),(1.18,cowl),(1.53,1.53),(NOSE,NOSE)],z)
+
+
+def shell(body,nose,tail):
+    rear_join,front_join=-1.865,1.774
+    # Fit the arches to the actual wheel centers after the plan-view nose taper.
+    zs={TAIL+(NOSE-TAIL)*i/40 for i in range(41)}
+    for axle,radius in [(FRONT_AXLE,.379),(REAR_AXLE,.384)]:
+        targets=[axle+radius*math.cos(math.pi*i/13) for i in range(14)]
+        targets.extend(axle+sign*(radius+feather) for sign in [-1,1] for feather in [.014,.036])
+        for target in targets:
+            low,high=TAIL,NOSE
+            for _ in range(20):
+                z=(low+high)*.5
+                if sidewall(z,1,0)[2]<target: low=z
+                else: high=z
+            zs.add((low+high)*.5)
+    anchors=[TAIL,NOSE,rear_join,front_join,-1.36,-.82,-.80,-.41,-.38,.385,.405,.425,1.16,1.18,1.53]
+    zs=sorted(set(anchors + [z for z in zs if all(abs(z-k)>.008 for k in anchors)]))
+    widths=[0,.20,.39,.52,.59,.64,.675,.69,.72,.745,.755,.80,.85,.90,.935,.962,.972,.987,1]
+    us=sorted({sign*u for sign in [-1,1] for u in widths})
+    def top(z,u):
+        depth=roof_station(z,u)
+        cowl=smoothstep(.34,1.12,depth)*(1-smoothstep(1.21,1.53,depth))
+        width=interpolate([(0,0),(.69,.69+.158*cowl),(.745,.745+.134*cowl),
+                           (.972,.972+.008*cowl),(1,1)],abs(u))
+        return surface(depth,math.copysign(width,u))
+    for a,b in zip(zs,zs[1:]):
+        mid=(a+b)/2
+        bumper=nose if mid>front_join else tail if mid<rear_join else body
+        for u,v in zip(us,us[1:]):
             lateral=abs((u+v)/2)
-            if lateral<.70 and .426-.08*lateral*lateral<mid<1.188-.32*lateral*lateral:
-                part.face(pts,glazing,(0,1,0))
-            elif mid>1.68 or mid < -1.79:
-                part.face(pts,side_paint,(0,1,0),silver_uv)
+            pts=[top(a,u),top(b,u),top(b,v),top(a,v)]
+            if lateral<.69 and .405<mid<1.18:
+                border=lateral>.675 or mid<.425 or mid>1.16
+                body.face(pts,carbon if border else glazing,(0,1,0))
+            elif .745<lateral<.972 and -.82<mid<.405:
+                border=lateral<.755 or lateral>.962 or mid<-.80 or mid>.385 or -.41<mid<-.38
+                body.face(pts,carbon if border else glazing,(0,1,0))
             else:
-                part.face(pts,side_paint if use_side else plan_paint,(0,1,0),side_uv if use_side else top_uv)
+                body.face(pts,plan_paint,(0,1,0),top_uv)
         for sign in [-1,1]:
-            def side(z,t):
-                x,upper,end=surface(z,sign)
-                lower=max(arch(z),.115+.048*smoothstep(1.64,NOSE,z),.115+.082*smoothstep(1.76,-TAIL,-z))
-                y=lower+(upper-lower)*t
-                inset=.048*(1-t)**2+.026*math.sin(math.pi*t)**2
-                return x-sign*inset,y,end
-            for j in range(ny):
-                lo,hi=j/ny,(j+1)/ny
-                pts=[side(a,lo),side(b,lo),side(b,hi),side(a,hi)]
-                # Wrap the outer edge in paint. Headlights and grille belong to the front fascia.
-                proj=silver_uv if (a+b)/2>1.63 or (a+b)/2 < -1.95 else side_uv
-                part.face(pts,side_paint,(sign,0,0),proj)
+            levels=[j/10 for j in range(10)]+[LIP_JOIN,1]
+            for lo,hi in zip(levels,levels[1:]):
+                pts=[sidewall(a,sign,lo),sidewall(b,sign,lo),sidewall(b,sign,hi),sidewall(a,sign,hi)]
+                part=body if lo>=LIP_JOIN else bumper
+                part.face(pts,side_paint,(sign,0,0),side_uv)
             def under(z):
-                x,y,end=side(z,0)
-                return x-sign*.26,y+.007,end
-            part.face([side(a,0),under(a),under(b),side(b,0)],liner,(0,-1,0))
+                x,y,end=sidewall(z,sign,0)
+                return x-sign*.24,y+.009,end
+            bumper.face([sidewall(a,sign,0),under(a),under(b),sidewall(b,sign,0)],liner,(0,-1,0))
+    return us
 
 
-def end_panel(part,front):
+def end_panel(body,bumper,front,us):
     z=NOSE if front else TAIL
     sign=1 if front else -1
     def point(u,v):
-        x,upper,z1=surface(z,u)
-        bottom=.111+(.052 if front else .086)*abs(u)**3
-        y=bottom+v*(upper-bottom)
-        indent=.067*(1-abs(u)**3)*(1-v)**.85
-        return x*(.975+.025*v),y,z1-sign*indent
-    for i in range(52):
-        u=i/26-1; un=(i+1)/26-1
-        for j in range(20):
-            v=j/20; vn=(j+1)/20
-            part.face([point(u,v),point(un,v),point(un,vn),point(u,vn)],
-                      plan_paint if front else side_paint,(0,0,sign),front_uv if front else rear_uv)
+        x,upper,end=surface(z,u)
+        height,dz=bumper_roll(z,v)
+        bottom=.115+(.048 if front else .082)*abs(u)**3
+        y=bottom+(upper-bottom)*height
+        # Recess the center grille and both side intakes. All edges meet the side return exactly.
+        inset=.047*(1-abs(u)**3)*(1-v)
+        if front:
+            grille=(1-smoothstep(.43,.67,abs(u)))*smoothstep(.13,.25,y)*(1-smoothstep(.52,.60,y))
+            duct=smoothstep(.60,.71,abs(u))*(1-smoothstep(.86,.98,abs(u)))
+            inset+=.048*grille+.035*duct*smoothstep(.16,.26,y)*(1-smoothstep(.47,.55,y))
+        return x-u*side_inset(v), y, end+dz-sign*inset
+    for u,un in zip(us,us[1:]):
+        levels=[j/15 for j in range(15)]+[LIP_JOIN,1]
+        for v,vn in zip(levels,levels[1:]):
+            part=body if v>=LIP_JOIN else bumper
+            mat=carbon if v==0 else plan_paint if front else side_paint
+            part.face([point(u,v),point(un,v),point(un,vn),point(u,vn)],mat,(0,0,sign),front_uv if front else rear_uv)
+        # The return follows the back of the lamp/grille carrier, below the painted edge.
+        def flange(u,depth):
+            x,y,end=point(u,LIP_JOIN)
+            return x*(1-.025*depth),y-.004-.020*depth,end-sign*(.008+.065*depth)
+        bumper.face([flange(u,0),flange(un,0),flange(un,1),flange(u,1)],liner,(0,1,0))
 
 
 def ellipsoid(part,center,scale,mat,segments=30,rings=16):
@@ -317,12 +400,19 @@ def wheel(part,x,y,z,side,width,radius):
 
 
 def wheel_well(body,x,y,z,sign,r):
+    def p(t,d):
+        return (x-sign*d, y+r*math.sin(t), z+r*math.cos(t))
     for i in range(58):
         a=-.19+i/58*(math.pi+.38); b=-.19+(i+1)/58*(math.pi+.38)
-        def p(t,d):
-            return (x-sign*d, y+r*math.sin(t), z+r*math.cos(t))
         body.face([p(a,0),p(b,0),p(b,.29),p(a,.29)],liner,(0,-math.sin(a),-math.cos(a)))
-        body.face([p(a,.28),p(b,.28),(x-sign*.28,y-.065,z)],liner,(sign,0,0))
+        body.face([p(a,.28),p(b,.28),(x-sign*.28,.105,z)],liner,(sign,0,0))
+    for a in [-.19, math.pi+.19]:
+        outer=p(a,0)
+        inner=p(a,.29)
+        foot=(outer[0],.106,outer[2])
+        inside=(inner[0],.106,inner[2])
+        body.face([outer,inner,inside,foot],liner,(0,0,-math.cos(a)))
+        body.face([inner,inside,(inner[0],.105,z)],liner,(sign,0,0))
 
 
 def beam(part,center,extent,mat):
@@ -389,19 +479,15 @@ def build():
     nose=Part('Front fascia',explosion=(0,.05,1.30))
     tail=Part('Rear fascia',explosion=(0,.06,-1.22))
     spoiler=Part('Rear spoiler',explosion=(0,1.0,-.55))
-    for part,a,b in [(tail,TAIL,-1.865),(body,-1.863,1.772),(nose,1.774,NOSE)]:
-        shell(part,a,b)
-    end_panel(nose,True)
-    end_panel(tail,False)
-    hood_emblem(nose)
+    for part in [body,nose,tail]: part.building_skin=True
+    us=shell(body,nose,tail)
+    end_panel(body,nose,True,us)
+    end_panel(body,tail,False,us)
+    for part in [body,nose,tail]: part.building_skin=False
+    hood_emblem(body)
     foil(spoiler)
     carrier(body,1.772,True)
     carrier(body,-1.863,False)
-    # Caps under the detachable exterior assemblies reveal a dark backing when pulled apart.
-    for part,z,sign in [(nose,1.774,-1),(tail,-1.865,1),(body,1.772,1),(body,-1.863,-1)]:
-        for j in range(40):
-            a=surface(z,j/20-1); b=surface(z,(j+1)/20-1)
-            part.face([a,b,(b[0],.14,b[2]),(a[0],.14,a[2])],liner,(0,0,sign))
     body.face([(-.74,.118,-1.91),(.74,.118,-1.91),(.74,.118,1.79),(-.74,.118,1.79)],liner,(0,-1,0))
     parts=[body,nose,tail,spoiler]
     for sign in [-1,1]:
@@ -423,7 +509,7 @@ def build():
                 for rd in [.145,.172]:
                     ellipsoid(hub,(x+sign*.052,r+math.cos(a)*rd,z+math.sin(a)*rd),(.0015,.005,.005),liner,6,4)
             ellipsoid(hub,(x+sign*.054,r+.038,z-.164),(.035,.086,.039),caliper_mat,28,18)
-            wheel_well(body,sign*.958,r,z,sign,r+.029)
+            wheel_well(body,sign*.907,r,z,sign,r+.077)
             parts.append(hub)
     return [part.object() for part in parts]
 
@@ -433,4 +519,9 @@ if __name__=='__main__':
     ASSETS.mkdir(parents=True,exist_ok=True)
     bpy.context.scene.unit_settings.system='METRIC'
     bpy.context.preferences.filepaths.save_version=0
+    for screen in bpy.data.screens:
+        for area in screen.areas:
+            for space in area.spaces:
+                if space.type=='FILE_BROWSER' and space.params:
+                    space.params.directory=b'//'
     bpy.ops.wm.save_as_mainfile(filepath=str(DESIGN/'r8-exterior.blend'), compress=True)

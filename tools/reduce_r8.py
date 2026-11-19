@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import bpy
+import bmesh
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = 32000
@@ -17,19 +18,55 @@ def triangle_count(mesh):
 objects = [obj for obj in bpy.context.scene.objects if obj.type == 'MESH']
 before = {obj.name: triangle_count(obj.data) for obj in objects}
 total = sum(before.values())
-# Retain the thin spoiler and brake hardware while spending most faces on the shell and wheels.
-weights = {obj.name: before[obj.name]**.79 for obj in objects}
-total_weight = sum(weights.values())
+# Keep the fitted glass, optical outlines and mating edges exactly as authored.
+# Decimating adjacent materials independently moves their boundaries across the paint.
+def retain_faces(mesh, keep):
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    bm.faces.ensure_lookup_table()
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if not keep[f.index]], context='FACES')
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+
+
+skin_meshes = {}
+remaining = {}
 for obj in objects:
-    quota = max(128, round(TARGET * weights[obj.name]/total_weight))
-    if before[obj.name] <= quota:
+    mask = obj.data.attributes.get('exterior_skin')
+    if mask:
+        protected = [entry.value for entry in mask.data]
+        if all(protected):
+            continue
+        skin = obj.data.copy()
+        retain_faces(skin, protected)
+        retain_faces(obj.data, [not value for value in protected])
+        skin_meshes[obj.name] = skin
+    remaining[obj.name] = triangle_count(obj.data)
+
+budget = TARGET - (total-sum(remaining.values()))
+weights = {name: count**.79 for name,count in remaining.items()}
+weight_sum = sum(weights.values())
+for obj in objects:
+    if obj.name not in remaining:
         continue
-    bpy.context.view_layer.objects.active = obj
-    mod = obj.modifiers.new('Race mesh', 'DECIMATE')
-    mod.decimate_type = 'COLLAPSE'
-    mod.ratio = quota/before[obj.name]
-    mod.use_collapse_triangulate = True
-    bpy.ops.object.modifier_apply(modifier=mod.name)
+    quota = max(128, round(budget*weights[obj.name]/weight_sum))
+    if remaining[obj.name] > quota:
+        bpy.context.view_layer.objects.active = obj
+        mod = obj.modifiers.new('Race mesh', 'DECIMATE')
+        mod.decimate_type = 'COLLAPSE'
+        mod.ratio = quota/remaining[obj.name]
+        mod.use_collapse_triangulate = True
+        bpy.ops.object.modifier_apply(modifier=mod.name)
+    if obj.name in skin_meshes:
+        skin = skin_meshes[obj.name]
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bm.from_mesh(skin)
+        bm.to_mesh(obj.data)
+        bm.free()
+        bpy.data.meshes.remove(skin)
+        obj.data.update()
 
 after = {obj.name: triangle_count(obj.data) for obj in objects}
 OUT.parent.mkdir(parents=True, exist_ok=True)

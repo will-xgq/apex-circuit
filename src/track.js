@@ -39,16 +39,18 @@ const rawBanks=track.map(p=>p.bank);
 track.forEach((p,i)=>{p.bank=(rawBanks[indexAt(i-1)]+2*rawBanks[i]+rawBanks[indexAt(i+1)])/4;});
 track.push({...track[0],s:length});
 
-function profile(bank,half,lateral) {
-  return Math.abs(bank)>.065 ? bank*clamp(lateral,-half*.55,half*.86) : bank*lateral;
+export const concreteLeft=-.55, concreteRight=.86, concreteBank=.065;
+export function crossfall(bank,half,lateral) {
+  const bowl=smooth(clamp((Math.abs(bank)-.045)/.04,0,1));
+  return bank*mix(lateral,clamp(lateral,half*concreteLeft,half*concreteRight),bowl);
 }
 function location(i,t,lateral) {
   const a=track[i],b=track[i+1],yaw=a.yaw+angle(b.yaw-a.yaw)*t;
   const half=mix(a.half,b.half,t),bank=mix(a.bank,b.bank,t);
   return {x:mix(a.x,b.x,t)+Math.cos(yaw)*lateral,z:mix(a.z,b.z,t)-Math.sin(yaw)*lateral,
-    y:mix(a.y,b.y,t)+profile(bank,half,lateral),yaw,half,curve:mix(a.curve,b.curve,t),
+    y:mix(a.y,b.y,t)+crossfall(bank,half,lateral),yaw,half,curve:mix(a.curve,b.curve,t),
     railRight:mix(a.railRight,b.railRight,t),railLeft:mix(a.railLeft,b.railLeft,t),
-    grade:mix(a.grade,b.grade,t),bank:profile(bank,half,lateral+.5)-profile(bank,half,lateral-.5),section:a.section};
+    grade:mix(a.grade,b.grade,t),centerBank:bank,bank:crossfall(bank,half,lateral+.5)-crossfall(bank,half,lateral-.5),section:a.section};
 }
 export function pose(distance,lateral=0) {
   const pos=wrap(distance)/step,i=Math.min(count-1,Math.floor(pos));
@@ -192,7 +194,7 @@ export function surfaceAt(s,lateral) {
   const p=pose(s,lateral),edge=Math.abs(lateral)-p.half,side=Math.sign(lateral);
   const onKerb=side===kerbSide(p)&&edge>=-.10&&edge<kerbWidth-.10;
   const kerb=onKerb?kerbRise(s,(edge+.10)/kerbWidth):0;
-  const concrete=p.bank<-.065 && lateral>=-p.half*.55 && lateral<=p.half*.86;
+  const concrete=p.centerBank < -concreteBank && lateral>=p.half*concreteLeft && lateral<=p.half*concreteRight;
   const station=wrap(s);
   const pit=station<pitMerge+2 && lateral<0 && Math.abs(lateral-pitOffset(station))<3.52;
   const kind=pit?'asphalt':onKerb?'kerb':edge>0?'grass':concrete?'concrete':'asphalt';

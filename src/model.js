@@ -58,7 +58,7 @@ fn environment(ray: vec3f, roughness: f32) -> vec3f {
   let original=textureSample(baseMap,texSampler,v.uv).rgb*mat.base.rgb;
   let peak=max(original.r,max(original.g,original.b));
   let chroma=(peak-min(original.r,min(original.g,original.b)))/max(.001,peak);
-  let paint=mat.factors.w*(1.0-smoothstep(.10,.32,chroma))*smoothstep(.047,.22,peak);
+  let paint=max(0.0,mat.factors.w)*(1.0-smoothstep(.10,.32,chroma))*smoothstep(.047,.22,peak);
   let base=original*mix(vec3f(1),v.paintBrake.rgb,paint);
   let surface=textureSample(surfaceMap,texSampler,v.uv);
   let rough=clamp(surface.g*mat.factors.y,.12,1.0);
@@ -88,6 +88,10 @@ fn environment(ray: vec3f, roughness: f32) -> vec3f {
   let env=environment(reflect(-eye,n),rough);
   let highlight=pow(max(dot(n,halfVector),0),mix(130.0,5.0,rough*rough))*.33;
   var color=diffuse+env*fresnel*(.96-.30*rough)+highlight*f0;
+  if(mat.factors.w<0.0) {
+    let glassFresnel=.105+.80*pow(1.0-ndv,3.0);
+    color=mix(base*.46,env,glassFresnel)+vec3f(.16)*highlight;
+  }
   let redLens=smoothstep(.06,.23,original.r-max(original.g,original.b));
   color+=vec3f(.34,.009,.003)*redLens*v.paintBrake.w;
   return vec4f(pow(clamp(color,vec3f(0),vec3f(1)),vec3f(1.0/2.2)),1);
@@ -191,7 +195,7 @@ export async function loadVehicle(device,format,camera,url,environment,envSample
     const [base,surface,normal]=await Promise.all([materialMap(pbr.baseColorTexture,[255,255,255,255],true),
       materialMap(pbr.metallicRoughnessTexture,[255,255,255,255],false),materialMap(material.normalTexture,[128,128,255,255],false)]);
     const factors=new Float32Array([...(pbr.baseColorFactor||[1,1,1,1]),pbr.metallicFactor??1,
-      pbr.roughnessFactor??1,material.normalTexture?.scale??1,Number(material.name.startsWith('Silver •') || material.name==='Suzuka silver')]);
+      pbr.roughnessFactor??1,material.normalTexture?.scale??1,material.name==='Laminated windshield'?-1:Number(material.name.startsWith('Silver •') || material.name==='Suzuka silver')]);
     const buffer=upload(device,factors,GPUBufferUsage.UNIFORM);
     return device.createBindGroup({layout:pipeline.getBindGroupLayout(1),entries:[
       {binding:0,resource:sampler},{binding:1,resource:base},{binding:2,resource:surface},

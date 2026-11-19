@@ -39,6 +39,13 @@ fn noise(p: vec2f) -> f32 {
   return mix(mix(hash(i),hash(i+vec2f(1,0)),u.x),
     mix(hash(i+vec2f(0,1)),hash(i+vec2f(1)),u.x),u.y);
 }
+fn filteredJoint(meters:f32, period:f32, pixel:f32, radius:f32) -> f32 {
+  let distance=abs(fract(meters/period+.5)-.5)*period;
+  let width=max(.003,pixel);
+  return (1.0-smoothstep(max(0.0,radius-.5*width),radius+.5*width,distance))*
+    min(1.0,2.0*radius/width);
+}
+fn turnUV(p:vec2f) -> vec2f { return vec2f(.80*p.x-.60*p.y,.60*p.x+.80*p.y); }
 fn sky(ray: vec3f) -> vec3f {
   let uv=vec2f(.5+atan2(ray.x,ray.z)/6.2831853,.5-asin(clamp(ray.y,-1.0,1.0))/3.14159265);
   return textureSampleLevel(skyMap,skySampler,uv,0).rgb;
@@ -106,6 +113,8 @@ struct VertexOut {
   let uv=(vec2f(${terrainBounds.right}.0,${terrainBounds.top}.0)-p)/vec2f(${terrainBounds.right-terrainBounds.x}.0,${terrainBounds.top-terrainBounds.z}.0);
   let du=dpdx(uv);let dv=dpdy(uv);let dx=dpdx(p);let dy=dpdy(p);
   let surf=textureSampleGrad(detailMap,groundSampler,p*.43,dx*.43,dy*.43).rgb;
+  let trackUV=in.color.yx;
+  let trackDx=dpdx(trackUV);let trackDy=dpdy(trackUV);let trackPixel=abs(trackDx)+abs(trackDy);
   let wireGrid=vec2f(in.color.x+in.color.y,in.color.x-in.color.y)*6.5;
   let wirePixel=max(fwidth(wireGrid),vec2f(.001));let heightPixel=fwidth(in.color.y);
   if(in.material==9 || in.material==15) {
@@ -121,7 +130,7 @@ struct VertexOut {
     return vec4f(mix(ink,vec3f(.27,.29,.27),.17+.49*smoothstep(85.0,195.0,ahead)),1);
   }
   let fog=1.0-exp(-length(view.eye.xyz-in.world)*.00068);
-  if(in.material==10) {
+  if(in.material==10 || in.material==21) {
     var ortho=textureSampleGrad(aerial,groundSampler,uv,du,dv).rgb;
     let pitUV=(vec2f(180.0,172.0)-p)/vec2f(340.0,272.0);
     let fade=min(pitUV,vec2f(1)-pitUV)*vec2f(340,272);
@@ -130,8 +139,18 @@ struct VertexOut {
     let light=.89+.14*abs(in.normal.y);
     let near=1.0-smoothstep(40.0,145.0,length(in.world-view.eye.xyz));
     let vegetation=smoothstep(.004,.054,ortho.g-ortho.r*.95);
-    let ground=clamp(ortho*1.12+vec3f(.025,.028,.012),vec3f(.032),vec3f(.89));
-    let grain=mix(.75+.50*surf.b,.65+.73*surf.g,vegetation);
+    var ground=clamp(ortho*1.12+vec3f(.025,.028,.012),vec3f(.032),vec3f(.89));
+    var grain=mix(.75+.50*surf.b,.65+.73*surf.g,vegetation);
+    if(in.material==21) {
+      let d=in.color.x;
+      let edge=smoothstep(.06,.47,d+.15*(surf.g-.5));
+      let grass=mix(vec3f(.34,.315,.221),vec3f(.295,.350,.215),edge);
+      let apron=1.0-smoothstep(1.4,6.5,d);
+      let field=smoothstep(.0,.85,in.color.z)*.85;
+      let shoulder=max(field,apron)*in.color.y;
+      ground=mix(ground,grass*(.79+.24*noise(p*.31)+.13*noise(p*.064)),shoulder);
+      grain=mix(grain,.72+.55*surf.g,shoulder);
+    }
     return vec4f(mix(ground*light*mix(1.0,grain,near),vec3f(.67,.73,.75),fog),1);
   }
   if(in.material==11) {
@@ -176,7 +195,7 @@ struct VertexOut {
   var normal=normalize(in.normal);
   if (dot(normal,dir)<0 && in.material==4) { normal=-normal; }
   let light=normalize(vec3f(-.68,.78,.31));
-  let speckle=noise(p*26.0);
+  let closeGrain=1.0-smoothstep(.012,.068,max(length(dx),length(dy)));
   let illumination=.81+max(0.0,dot(normal,light))*.22;
   var color=in.color*illumination;
   let accessRoad=in.material==16;
@@ -189,7 +208,40 @@ struct VertexOut {
     let seams=1.0-smoothstep(0.0,.025,abs(noise(p*.23)-.44));
     let grain=noise(p*38.0);
     let blotch=noise(p*.075);
-    color*=(.80+.14*variation+.06*speckle+.11*grain+.095*blotch-.065*seams)*(.67+.68*surf.r);
+    color*=(.80+.14*variation+.06*mix(.5,noise(p*26.0),closeGrain)+.11*grain+.095*blotch-.065*seams)*(.67+.68*surf.r);
+  }
+  let circuit=in.material==18 || in.material==19;
+  if(circuit) {
+    // Both scales use metres along/across the track, so aggregate, wear and joints turn with it.
+    let fine=textureSampleGrad(detailMap,groundSampler,trackUV*.94,trackDx*.94,trackDy*.94).rgb;
+    let rotated=textureSampleGrad(detailMap,groundSampler,turnUV(trackUV)*.227+vec2f(.32,.61),
+                                   turnUV(trackDx)*.227,turnUV(trackDy)*.227).rgb;
+    let lane=in.color.z+(rotated.b-.52)*.34;
+    let rubber=exp(-lane*lane*.18);
+    let tread=abs(lane)-.79;
+    let wheelPath=exp(-tread*tread*3.8);
+    let weather=noise(vec2f(trackUV.x*.145,trackUV.y*.075));
+    let normalLight=.81+.21*max(0.0,dot(normal,light));
+    if(in.material==19) {
+      // Two pours of slab concrete, with staggered transverse expansion joints.
+      let outer=trackUV.x>.54;
+      let station=trackUV.y+select(0.0,1.72,outer);
+      let repeat=3.58;
+      let across=filteredJoint(station+(fine.b-.52)*.014,repeat,trackPixel.y,.012);
+      let longitudinal=1.0-smoothstep(.006,.018+.5*trackPixel.x,abs(trackUV.x-.54+(rotated.b-.52)*.012));
+      let edge=min(1.0,.024/max(.002,trackPixel.x));
+      let seam=max(across,longitudinal*edge);
+      let slab=hash(vec2f(floor(station/repeat),select(0.0,1.0,outer)))-.5;
+      let concrete=.80+.29*fine.b+.105*rotated.b+.095*(weather-.5)+.055*slab;
+      color=vec3f(.545,.532,.492)*normalLight*concrete*(1.0-.145*rubber-.067*wheelPath);
+      color*=1.0-.37*seam;
+    } else {
+      let stone=.76+.32*fine.r+.14*rotated.r+.11*(weather-.5);
+      color=vec3f(.282,.288,.293)*normalLight*stone*(1.0-.105*rubber-.039*wheelPath);
+    }
+  }
+  if(in.material==20) {
+    color*=.81+.20*surf.r+.09*noise(p*.64);
   }
   if (in.material==2) {
     color*=(.82+.13*noise(p*.24)+.12*noise(p*3.4))*(.62+.82*surf.g);
@@ -200,7 +252,9 @@ struct VertexOut {
   }
   if (in.material==8) { color*=.91+.11*noise(p*11.0); }
   if (in.material==6) {
-    color=mix(color,vec3f(.44,.425,.40),smoothstep(.67,.83,noise(p*12.0))*.65);
+    let flecks=smoothstep(.62,.82,surf.b);
+    color=color*(.82+.24*surf.b)+vec3f(.045)*flecks;
+    color=mix(color,vec3f(.40,.392,.363),.17*noise(p*.62));
   }
   if (in.material==4) {
     let reflection=reflect(-dir,normal);
@@ -208,7 +262,7 @@ struct VertexOut {
   }
   if (in.material==3) { color=in.color; }
   if (in.material==5) { color=in.color*mix(.62,1.2,in.brake); }
-  if (in.material==1 || in.material==6 || accessRoad || in.material==17) {
+  if (circuit || in.material==1 || in.material==6 || accessRoad || in.material==17 || in.material==20) {
     for(var i=1u;i<=u32(view.up.w);i++) {
       let obj=objects[i];
       let delta=in.world.xz-obj.position.xz;
@@ -292,7 +346,7 @@ export async function createRenderer(canvas, scene, drivers, onError) {
       fragment:{module,entryPoint:'meshFragment',targets:[{format}]},
       depthStencil:depth,multisample:{...multisample,alphaToCoverageEnabled:true},
     }),
-    loadVehicle(device,format,camera,new URL('../assets/r8/audi-r8.glb',import.meta.url),environment,skySampler,drivers),
+    loadVehicle(device,format,camera,new URL('../assets/r8/audi-r8.glb?v=surfacing-1',import.meta.url),environment,skySampler,drivers),
     loadForest(device,format,camera,scene.trees,scene.groves),
     createDrivingEffects(device,format,camera),
     loadCockpit(device,format),

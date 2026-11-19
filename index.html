@@ -97,9 +97,9 @@
   const modules=['main','gpu','mesh','scenery','race','vehicle','track','coach','model','forest','cockpit','textures','audio','driving-effects'].map(name=>'./src/'+name+'.js');
   const survey=['route','line','relief','roadside','woodland'].map(name=>'./assets/nordschleife/'+name+'.js');
   const map=document.createElement('script');map.type='importmap';
-  map.textContent=JSON.stringify({imports:Object.fromEntries([...modules,...survey].map(path=>[path,path+'?v=speed-audio-1']))});
+  map.textContent=JSON.stringify({imports:Object.fromEntries([...modules,...survey].map(path=>[path,path+'?v=surfacing-1']))});
   document.currentScript.after(map);
 </script>
-<script type="module" src="./src/main.js?v=speed-audio-1"></script>
+<script type="module" src="./src/main.js?v=surfacing-1"></script>
 </body>
 </html>

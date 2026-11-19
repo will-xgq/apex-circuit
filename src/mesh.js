@@ -1,7 +1,7 @@
 import {roadsideTrees} from '../assets/nordschleife/roadside.js';
 import {addLandmarks,wooded} from './scenery.js';
 import {lineOffset,referenceSpeed} from './coach.js';
-import {clamp,gridSlot,ground,kerbRise,kerbSide,kerbWidth,length,localRoad,mix,pitMerge,pitOffset,pitOpening,pose,railFaceAt,slabLength,terrainBounds,track} from './track.js';
+import {angle,clamp,concreteBank,concreteLeft,concreteRight,crossfall,gridSlot,ground,kerbRise,kerbSide,kerbWidth,length,localRoad,mix,pitMerge,pitOffset,pitOpening,pose,railFaceAt,slabLength,step,terrainBounds,track,wrap} from './track.js';
 
 const sub = (a,b) => a.map((value,i)=>value-b[i]);
 export const cross = (a,b) => [a[1]*b[2]-a[2]*b[1],a[2]*b[0]-a[0]*b[2],a[0]*b[1]-a[1]*b[0]];
@@ -20,6 +20,9 @@ class Mesh {
   panel(a,b,c,d,ua,ub,uc,ud,material) {
     this.tri(a,b,c,ua,material,ub,uc);this.tri(a,c,d,ua,material,uc,ud);
   }
+  smoothPanel(points,normals,colors,material) {
+    for(const i of [0,1,2,0,2,3]) this.data.push(...points[i],...normals[i],...colors[i],material);
+  }
   box(x,y,z,w,h,d,color,material=0,yaw=0) {
     const sin=Math.sin(yaw), cos=Math.cos(yaw);
     const points=[[-1,-1,-1],[1,-1,-1],[1,1,-1],[-1,1,-1],
@@ -30,10 +33,26 @@ class Mesh {
   }
 }
 
-const road = (s,l,y=0) => {
-  const p=pose(s,l);
-  return [p.x,p.y+y,p.z];
-};
+// Hermite offsets take the pavement through every surveyed station and tangent.
+const arcs=track.slice(0,-1).map((a,i)=>{
+  const b=track[i+1],x=b.x-a.x,z=b.z-a.z,h=Math.hypot(x,z);
+  return [h*Math.sin(a.yaw)-x,h*Math.cos(a.yaw)-z,x-h*Math.sin(b.yaw),z-h*Math.cos(b.yaw)];
+});
+const bankRates=arcs.map((_,i)=>{
+  const n=arcs.length;
+  return (track[(i+1)%n].bank-track[(i+n-1)%n].bank)/(2*step);
+});
+function pavementStation(s) {
+  const f=wrap(s)/step,i=Math.min(arcs.length-1,Math.floor(f)),t=f-i,k=t*(1-t),a=arcs[i];
+  const p=pose(s);
+  return {...p,s,x:p.x+k*mix(a[0],a[2],t),z:p.z+k*mix(a[1],a[3],t),
+    rightX:Math.cos(p.yaw),rightZ:-Math.sin(p.yaw),line:lineOffset(s),
+    bankRate:mix(bankRates[i],bankRates[(i+1)%arcs.length],t)};
+}
+function pavementVertex(p,l,h=0) {
+  return [p.x+p.rightX*l,p.y+crossfall(p.centerBank,p.half,l)+h,p.z+p.rightZ*l];
+}
+const road=(s,l,y=0)=>pavementVertex(pavementStation(s),l,y);
 function strip(mesh,a,b,l,r,y,color,material=0) {
   mesh.quad(road(a,l,y),road(b,l,y),road(b,r,y),road(a,r,y),color,material);
 }
@@ -77,9 +96,6 @@ export function landscape() {
     const point=pose(p.s,l);
     return [point.x,point.y+h,point.z];
   };
-  function band(mesh,p,q,leftA,leftB,rightA,rightB,h,color,mat=0) {
-    mesh.quad(vertex(p,leftA,h),vertex(q,leftB,h),vertex(q,rightB,h),vertex(p,rightA,h),color,mat);
-  }
   function roadsideY(x,z,near=localRoad(x,z,58)) {
     const base=terrainY(x,z);
     if(!near) return base;
@@ -87,10 +103,49 @@ export function landscape() {
     const t=clamp((Math.abs(near.lateral)-outer)/19,0,1);
     return mix(near.y,base-.18,t*t*(3-2*t));
   }
-  function verge(p,side,t) {
-    const face=railFaceAt(p,side),end=Math.max(face+21,41);
-    const offset=mix(p.half+.42,end,t),out=pose(p.s,side*offset);
-    return [out.x,roadsideY(out.x,out.z,{...out,s:p.s,lateral:side*offset})+.016,out.z];
+  function vergePoint(p,side,band) {
+    const outer=Math.max(railFaceAt(p,side)+21,41);
+    // An inner verge wider than the turn radius folds back through the roadway.
+    const limit=side*p.curve>.003 ? clamp(.79/(side*p.curve),p.half+4,outer) : outer;
+    const offset=[p.half,p.half+.56,Math.min(p.half+3.4,limit),mix(p.half+3.4,limit,.48),limit][band];
+    const at=pavementVertex(p,side*offset);
+    const y=roadsideY(at[0],at[2],{...p,y:at[1],lateral:side*offset});
+    const field=(1-clamp((offset-railFaceAt(p,side)-.5)/Math.max(4,limit-railFaceAt(p,side)-.5),0,1));
+    return {point:[at[0],y+.016,at[2]],distance:offset-p.half,field};
+  }
+  function pavement(mesh,a,b,bowl) {
+    function row(p) {
+      const h=p.half;
+      const offsets=[-h,-h+.135,-h+.245,h*concreteLeft,.54,h*concreteRight,h-.245,h-.135,h];
+      return offsets.map(l=>({l,point:pavementVertex(p,l,.035),uv:[p.s,l,l-p.line]}));
+    }
+    function normal(p,v,slope) {
+      const grade=(p.grade+p.bankRate*clamp(v.l,p.half*concreteLeft,p.half*concreteRight))/
+        Math.max(.55,1-p.curve*v.l);
+      const sn=Math.sin(p.yaw),cs=Math.cos(p.yaw);
+      return norm([-sn*grade-cs*slope,1,-cs*grade+sn*slope]);
+    }
+    const first=row(a),last=row(b);
+    const materials=[18,20,18,bowl?19:18,bowl?19:18,18,20,18];
+    const white=[.82,.81,.76];
+    for(let i=0;i<materials.length;i++) {
+      const corners=[first[i],last[i],last[i+1],first[i+1]];
+      const slope=(lo,hi)=>(hi.point[1]-lo.point[1])/(hi.l-lo.l);
+      const sa=slope(first[i],first[i+1]),sb=slope(last[i],last[i+1]);
+      const normals=[normal(a,corners[0],sa),normal(b,corners[1],sb),normal(b,corners[2],sb),normal(a,corners[3],sa)];
+      mesh.smoothPanel(corners.map(v=>v.point),normals,corners.map(v=>materials[i]===20?white:v.uv),materials[i]);
+    }
+    for(const side of [-1,1]) {
+      const grassWeight=p=>side<0 && (p.s<pitMerge+5 || p.s>length-55)?0:1;
+      let left=vergePoint(a,side,0),right=vergePoint(b,side,0);
+      for(let band=1;band<=4;band++) {
+        const nextLeft=vergePoint(a,side,band),nextRight=vergePoint(b,side,band);
+        const attr=(pt,p)=>[pt.distance,grassWeight(p),pt.field];
+        const quad=side>0?[left,right,nextRight,nextLeft]:[nextLeft,nextRight,right,left];
+        mesh.panel(...quad.map(v=>v.point),attr(quad[0],a),attr(quad[1],b),attr(quad[2],b),attr(quad[3],a),21);
+        left=nextLeft;right=nextRight;
+      }
+    }
   }
   function fence(p,side) {
     const mapped=side<0?p.fenceRight:p.fenceLeft,face=railFaceAt(p,side);
@@ -99,26 +154,22 @@ export function landscape() {
     if((p.section==='T13'&&side>0)||(p.section==='Brünnchen'&&side<0)||(p.section==='Pflanzgarten'&&side<0)) return face+1.15;
     return 0;
   }
-  const grass=[.315,.375,.22],paint=[.82,.82,.76],asphalt=[.272,.278,.282];
+  const paint=[.82,.82,.76];
   for(let i=0;i<track.length-1;i++) {
     const p=track[i],q=track[i+1],mesh=tileFor(p.x,p.z).mesh;
-    const bowl=p.section==='Karussell'||p.section==='Mini-Karussell';
-    if (bowl) {
-      const fractions=[-1,-.55,0,.86,1];
-      for(let k=1;k<fractions.length;k++) {
-        const a=fractions[k-1],b=fractions[k];
-        const concrete=k===2||k===3;
-        band(mesh,p,q,p.half*a,q.half*a,p.half*b,q.half*b,.035,concrete?(i%2?[.58,.55,.50]:[.54,.52,.48]):asphalt,concrete?8:1);
-      }
-    } else band(mesh,p,q,-p.half,-q.half,p.half,q.half,.035,asphalt,1);
+    const turns=Math.ceil(Math.abs(angle(q.yaw-p.yaw))/.062);
+    const pieces=clamp(turns,1,6),cuts=Array.from({length:pieces+1},(_,j)=>j/pieces);
+    // Put a real edge where the banked concrete starts and ends, including the entry ramp.
+    if((p.bank+concreteBank)*(q.bank+concreteBank)<0) cuts.push((-concreteBank-p.bank)/(q.bank-p.bank));
+    cuts.sort((a,b)=>a-b);
+    let a=pavementStation(p.s);
+    for(const t of cuts.slice(1)) {
+      const b=pavementStation(mix(p.s,q.s,t));
+      if(b.s-a.s>.0001) pavement(mesh,a,b,(a.centerBank+b.centerBank)*.5 < -concreteBank);
+      a=b;
+    }
     for(const side of [-1,1]) {
-      const a=side*p.half,b=side*q.half,faceA=railFaceAt(p,side),faceB=railFaceAt(q,side);
-      band(mesh,p,q,a-side*.19-.045,b-side*.19-.045,a-side*.19+.045,b-side*.19+.045,.054,paint);
-      band(mesh,p,q,a,b,a+side*.42,b+side*.42,.018,grass,2);
-      for(const [t,u] of [[0,.35],[.35,.65],[.65,1]]) {
-        const a1=verge(p,side,t),b1=verge(q,side,t),a2=verge(p,side,u),b2=verge(q,side,u);
-        if(side>0) mesh.quad(a1,b1,b2,a2,grass,10);else mesh.quad(a2,b2,b1,a1,grass,10);
-      }
+      const faceA=railFaceAt(p,side),faceB=railFaceAt(q,side);
       if(pitOpening(side,i))continue;
       const steel=(h,depth=0)=>[vertex(p,side*(faceA+depth),h),vertex(q,side*(faceB+depth),h)];
       for(let row=0;row<3;row++) {
@@ -145,13 +196,18 @@ export function landscape() {
       const b=Math.min(a+slabLength,q.s),mid=pose((a+b)/2),side=kerbSide(mid);
       if (!side) continue;
       const color=Math.floor((a+.02)/slabLength)%2?[.73,.73,.67]:[.57,.125,.096];
-      for (const [lo,hi] of [[0,.27],[.27,.74],[.74,1]]) {
-        const pt=(s,t)=>{const h=pose(s).half; return road(s,side*(h-.10+t*kerbWidth),.041+kerbRise(s,t));};
-        for(let u=a;u<b-.005;u+=.4) {
-          const v=Math.min(u+.4,b);
-          if(side>0) mesh.quad(pt(u,lo),pt(v,lo),pt(v,hi),pt(u,hi),color,6);
-          else mesh.quad(pt(u,hi),pt(v,hi),pt(v,lo),pt(u,lo),color,6);
+      const kerbRow=s=>{
+        const station=pavementStation(s);
+        return [0,.27,.74,1].map(t=>pavementVertex(station,side*(station.half-.10+t*kerbWidth),.041+kerbRise(s,t)));
+      };
+      let last=kerbRow(a);
+      for(let u=a;u<b-.005;u+=.4) {
+        const next=kerbRow(Math.min(u+.4,b));
+        for(let k=0;k<3;k++) {
+          if(side>0) mesh.quad(last[k],next[k],next[k+1],last[k+1],color,6);
+          else mesh.quad(last[k+1],next[k+1],next[k],last[k],color,6);
         }
+        last=next;
       }
     }
   }
